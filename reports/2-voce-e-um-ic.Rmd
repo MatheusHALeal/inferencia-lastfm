@@ -22,15 +22,15 @@ theme_set(theme_bw())
 ## Os dados
 
 ```{r}
-set.seed(12345)
 
 lastfm = read_csv(here::here("data/experimento-lastfm.csv"), 
                   col_types = cols(.default = col_double(), 
                                    user = col_character()))
 
 lastfm = lastfm %>% 
-  sample_n(300) %>% 
-  select(news, old, mediana_pop)
+  select(news, old, mediana_pop) %>% 
+  na.omit(.) %>% 
+  mutate(prop_news = news/(news+old))
 
 glimpse(lastfm)
 ```
@@ -39,7 +39,102 @@ glimpse(lastfm)
 
 Utilizaremos ICs para estimar duas métricas sobre os usuários do LastFM em geral durante um período de 6 meses. Em ambos os casos faremos isso a partir de uma amostra de 300 usuários. As duas métricas são: 
 
-1. Qual a proporção de novos artistas em geral escutada por usuários?
+1. Qual a proporção de novos artistas escutados pelos usuários
 2. Para os usuários que gostam de música muito pop (mediana_pop > 5), qual a correlação entre a popularidade mediana dos artistas escutado e a proporção dos artistas escutados que eram novos. 
 
-Crie intervalos com 95% de confiança.
+### Aplicando bootstrapping 
+
+```{r}
+funcao_theta = function(df) {
+  df %>%
+    pull(prop_news) %>%
+    mean()
+}
+
+theta = funcao_theta(lastfm)
+summary(lastfm)
+
+set.seed(12345)
+amostra = lastfm %>%  
+  sample_n(300) 
+
+theta_c = funcao_theta(amostra)
+theta
+```
+
+
+```{r}
+repeticoes = 5000 # pelo menos 2000, mas mais não faz mal.
+
+um_bootstrap <- function(x){
+  prop_news = x %>% pull(prop_news)
+  boot_x <- sample(prop_news,      # amostre dos dados
+                   size = NROW(x), # tamanho igual ao recebido
+                   replace = TRUE) # aqui é o bootstrap
+  return(mean(boot_x))
+}
+
+# A REAMOSTRAGEM
+reamostragens = tibble(i = 1:repeticoes) %>% 
+  mutate(theta_c_s = map_dbl(i, ~ um_bootstrap(amostra)))
+
+reamostragens
+```
+
+
+```{r}
+reamostragens %>%
+  ggplot(aes(x = theta_c_s)) +
+  geom_histogram(binwidth = 0.002,
+                 colour = "darkorange",
+                 fill = "white")
+
+reamostragens %>%
+  ggplot(aes(x = theta_c_s - theta_c)) +
+  geom_histogram(binwidth = 0.002,
+                 colour = "darkblue",
+                 fill = "white")
+```
+
+```{r}
+intervalo = reamostragens %>% 
+  mutate(erro = theta_c_s - theta_c) %>% 
+  summarise(erro_i = as.numeric(quantile(erro, .05)), 
+            erro_s = as.numeric(quantile(erro, .95)))
+
+intervalo
+```
+
+
+```{r}
+intervalo = intervalo %>% 
+  mutate(valor_i = theta_c + erro_i, 
+         valor_s = theta_c + erro_s)
+
+intervalo
+```
+
+```{r}
+ggplot() +
+  geom_rect(
+    data = intervalo,
+    aes(xmin = valor_i, xmax = valor_s),
+    ymin = -Inf,
+    ymax = Inf,
+    fill = "gold",
+    alpha = .25
+  ) +
+  geom_histogram(
+    data = reamostragens,
+    aes(theta_c_s),
+    binwidth = .002,
+    fill = "white",
+    colour = "darkgrey"
+  ) +
+  geom_vline(xintercept = theta,
+             color = "blue",
+             size = 1) +
+  geom_vline(xintercept = theta_c, color = "dark green") +
+  scale_x_continuous(breaks = c(intervalo$valor_i, intervalo$valor_s, theta_c, theta)) +
+  labs(title = expression("Intervalo estimado via bootstrap"))
+```
